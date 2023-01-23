@@ -163,7 +163,7 @@ window.createMap = function () {
 		    mipmaps = res.mipmaps,
 		    spawn = res.spawn;
 
-		var x, z, zoom, light;
+		var x, z, zoom, light, shadow;
 
 		var updateParams = function () {
 			var args = parseHash();
@@ -172,6 +172,7 @@ window.createMap = function () {
 			x = parseFloat(args['x']);
 			z = parseFloat(args['z']);
 			light = parseInt(args['light']);
+			shadow = parseInt(args['shadow']);
 
 			if (isNaN(zoom))
 				zoom = 0;
@@ -197,14 +198,19 @@ window.createMap = function () {
 
 		var mapLayer = new MinedMapLayer(mipmaps, 'map');
 		var lightLayer = new MinedMapLayer(mipmaps, 'light');
+		var shadowLayer = new MinedMapLayer(mipmaps, 'shadow');
 
 		mapLayer.addTo(map);
 
 		if (light)
 			map.addLayer(lightLayer);
+	
+		if (shadow)
+			map.addLayer(shadowLayer);
 
 		var overlayMaps = {
 			"Illumination": lightLayer,
+			"Shadows": shadowLayer
 		};
 
 		L.control.layers({}, overlayMaps).addTo(map);
@@ -224,6 +230,9 @@ window.createMap = function () {
 
 			if (map.hasLayer(lightLayer))
 				ret += '&light=1';
+
+			if (map.hasLayer(shadowLayer))
+			ret += '&shadow=1';
 
 			return ret;
 		};
@@ -260,6 +269,11 @@ window.createMap = function () {
 				map.addLayer(lightLayer);
 			else
 				map.removeLayer(lightLayer);
+
+			if (shadow)
+				map.addLayer(shadowLayer);
+			else
+				map.removeLayer(shadowLayer);
 
 			updateHash();
 		};
