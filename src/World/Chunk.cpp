@@ -13,6 +13,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include <cstdio>
+#include <iostream>
 
 namespace MinedMap {
 namespace World {

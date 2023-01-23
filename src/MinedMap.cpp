@@ -107,11 +107,13 @@ static Resource::Color collectColors(
 	return (1.0f / total) * c;
 }
 
-static void addChunk(Resource::Color image[DIM*DIM], uint8_t lightmap[2*DIM*DIM], chunk_idx_t X, chunk_idx_t Z,
+static void addChunk(Resource::Color image[DIM*DIM], uint8_t lightmap[2*DIM*DIM], uint8_t shadowmap[2*(DIM/2)*(DIM/2)], chunk_idx_t X, chunk_idx_t Z,
 	const World::ChunkData *data, const std::unique_ptr<uint8_t[]> biomemaps[3][3]
 ) {
 	World::Chunk chunk(data);
-	World::Chunk::Heightmap layer = chunk.getTopLayer(World::Chunk::WITH_DEPTH);
+	World::Chunk::Heightmap layer = chunk.getTopLayer(World::Chunk::WITH_DEPTH);	
+
+	block_idx_t xs, zs; // shadowmap coordinates
 
 	for (block_idx_t x = 0; x < World::Chunk::SIZE; x++) {
 		for (block_idx_t z = 0; z < World::Chunk::SIZE; z++) {
@@ -124,6 +126,24 @@ static void addChunk(Resource::Color image[DIM*DIM], uint8_t lightmap[2*DIM*DIM]
 
 			image[i] = collectColors(X*World::Chunk::SIZE+x, Z*World::Chunk::SIZE+z, block, biomemaps);
 			lightmap[2*i+1] = (1 - block.blockLight/15.f)*192;
+
+			xs = x/2;
+			zs = z/2;
+
+			const World::Chunk::Height &height_s1 = layer.v[xs*2][zs*2];
+			const World::Chunk::Height &height_s2 = layer.v[xs*2+1][zs*2];
+			const World::Chunk::Height &height_s3 = layer.v[xs*2][zs*2+1];
+			const World::Chunk::Height &height_s4 = layer.v[xs*2+1][zs*2+1];
+
+			size_t j = (Z*(World::Chunk::SIZE/2)+zs)*(DIM/2) + X*(World::Chunk::SIZE/2)+xs;
+
+			int16_t main_light = height_s4.y - height_s1.y; // goes from -255 to 255, or more, 0 is flat
+			int16_t side_light = std::abs(height_s2.y - height_s3.y); // goes from -255 to 255 
+			shadowmap[2*j] = std::min(255,std::max(0,
+				(main_light*8 + 128)-side_light
+			));
+			shadowmap[2*j+1] = std::abs(shadowmap[2*j]/2-128);
+
 		}
 	}
 }
@@ -150,15 +170,15 @@ static void writeStamp(const std::string &filename, int64_t v) {
 	}
 }
 
-static bool writeImage(const std::string &output, const uint8_t *data, PNG::Format format, int64_t t) {
+static bool writeImage(const std::string &output, const uint8_t *data, PNG::Format format, int64_t t, uint8_t divider = 1) {
 	const std::string tmpfile = output + ".tmp";
 
-	size_t len = PNG::formatBytes(format)*DIM*DIM;
+	size_t len = PNG::formatBytes(format)*DIM/divider*DIM/divider;
 	bool changed = true;
 
 	try {
 		std::unique_ptr<uint8_t[]> old(new uint8_t[len]);
-		PNG::read(output.c_str(), old.get(), DIM, DIM, format);
+		PNG::read(output.c_str(), old.get(), DIM/divider, DIM/divider, format);
 
 		if (std::memcmp(data, old.get(), len) == 0)
 			changed = false;
@@ -167,7 +187,7 @@ static bool writeImage(const std::string &output, const uint8_t *data, PNG::Form
 
 	try {
 		if (changed) {
-			PNG::write(tmpfile.c_str(), data, DIM, DIM, format);
+			PNG::write(tmpfile.c_str(), data, DIM/divider, DIM/divider, format);
 
 			if (std::rename(tmpfile.c_str(), output.c_str()) < 0) {
 				std::fprintf(stderr, "Unable to save %s: %s\n", output.c_str(), std::strerror(errno));
@@ -289,7 +309,7 @@ static void makeMap(const std::string &regiondir, const std::string &outputdir, 
 	std::string inname = formatTileName(x, z, "mca");
 	std::string outname = formatTileName(x, z, "png");
 	std::string input = regiondir + "/" + inname;
-	std::string output = outputdir + "/map/0/" + outname, output_light = outputdir + "/light/0/" + outname;
+	std::string output = outputdir + "/map/0/" + outname, output_light = outputdir + "/light/0/" + outname, output_shadow = outputdir + "/shadow/0/" + outname;
 	std::string biomenames[3][3];
 
 	int64_t intime = getModTime(input);
@@ -326,13 +346,17 @@ static void makeMap(const std::string &regiondir, const std::string &outputdir, 
 
 		std::unique_ptr<uint8_t[]> lightmap(new uint8_t[2*DIM*DIM]);
 		std::memset(lightmap.get(), 0, 2*DIM*DIM);
+		
+		std::unique_ptr<uint8_t[]> shadowmap(new uint8_t[2*(DIM/2)*(DIM/2)]);
+		std::memset(shadowmap.get(), 0, 2*(DIM/2)*(DIM/2));
 
 		World::Region::visitChunks(input.c_str(), [&] (chunk_idx_t X, chunk_idx_t Z, const World::ChunkData *chunk) {
-			addChunk(image.get(), lightmap.get(), X, Z, chunk, biomemaps);
+			addChunk(image.get(), lightmap.get(), shadowmap.get(), X, Z, chunk, biomemaps);
 		});
 
 		bool changed = writeImage(output, reinterpret_cast<const uint8_t*>(image.get()), PNG::RGB_ALPHA, intime);
 		changed = writeImage(output_light, lightmap.get(), PNG::GRAY_ALPHA, intime) || changed;
+		changed = writeImage(output_shadow, shadowmap.get(), PNG::GRAY_ALPHA, intime, 2) || changed;
 		std::printf("%s.\n", changed ? "done" : "unchanged");
 	} catch (const std::exception& ex) {
 		std::fprintf(stderr, "Failed to generate %s: %s\n", output.c_str(), ex.what());
@@ -427,6 +451,7 @@ static void makeMipmaps(const std::string &dir, Info *info) {
 		info->addMipmapLevel();
 		makeDir(dir + "/map/" + format(level + 1));
 		makeDir(dir + "/light/" + format(level + 1));
+		makeDir(dir + "/shadow/" + format(level + 1));
 
 		info->visitRegions(level, [&] (int x, int z) {
 			info->addRegion(floored_half(x), floored_half(z), level + 1);
@@ -437,6 +462,7 @@ static void makeMipmaps(const std::string &dir, Info *info) {
 				info->addRegion(x, z, level + 1);
 
 			makeMipmap(dir + "/light", level + 1, x, z, PNG::GRAY_ALPHA);
+			//makeMipmap(dir + "/shadow", level + 1, x/2, z/2, PNG::GRAY_ALPHA);
 		});
 	}
 }
@@ -471,6 +497,8 @@ static void doLevel(const std::string &inputdir, const std::string &outputdir) {
 	makeDir(outputdir + "/map/0");
 	makeDir(outputdir + "/light");
 	makeDir(outputdir + "/light/0");
+	makeDir(outputdir + "/shadow");
+	makeDir(outputdir + "/shadow/0");
 
 	Info info = collectInfo(regiondir);
 
